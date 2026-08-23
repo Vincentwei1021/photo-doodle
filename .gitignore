@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+# experimental backup, not needed at runtime
+assets/hand_pen_codex_hires.png
