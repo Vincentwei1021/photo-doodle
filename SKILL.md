@@ -1,11 +1,20 @@
 ---
 name: photo-doodle
-description: 在照片上程序化手绘可爱马克笔涂鸦（白色/彩色、水彩/蜡笔/荧光/闪光多种笔刷），输出静态成品图 + "一笔一笔画出来"的逐笔绘制过程视频（MP4）。当用户想给照片/自拍/人像加手绘涂鸦、贴纸感装饰、天使光环、猫耳、爱心星星、手账标注、涂鸦短视频，或提到 photo doodle、照片涂鸦、给照片画点什么、涂鸦动画时使用。不依赖任何 AI 图像模型，纯 PIL+ffmpeg 本地渲染，最终照片本身不被修改（涂鸦是叠加层）。
+description: 在照片上程序化手绘可爱马克笔涂鸦（白色/彩色、水彩/蜡笔/荧光/闪光多种笔刷），输出静态成品图 + "一笔一笔画出来"的逐笔绘制过程视频（MP4）。当用户想给照片/自拍/人像加手绘涂鸦、贴纸感装饰、天使光环、猫耳、爱心星星、手账标注、涂鸦短视频，或提到 photo doodle、照片涂鸦、给照片画点什么、涂鸦动画时使用。标准流程：若有生图模型（Codex 等）先生成涂鸦设计稿作布局参考，再用引擎真矢量笔迹在原图上复刻；没有则直接自行设计。渲染纯 PIL+ffmpeg 本地完成，最终照片本身不被修改（涂鸦是叠加层）。
 ---
 
 # photo-doodle：照片手绘涂鸦 + 过程视频
 
 在照片上生成像真人用马克笔画的涂鸦：抖动笔迹、圆头笔画、笔锋收细、暗色底影、柔光。每个版本同时产出静态 JPG 和逐笔绘制过程 MP4（观众能看到每一笔被画出来，文字按书写方向擦入）。
+
+**铁律：原照片一个像素不动，所有涂鸦必须是引擎的真矢量笔迹逐笔画出。** 禁止像素揭示/图像差分显现类方案。
+
+## 标准流程（先判断走哪条路）
+
+1. **有生图模型可用**（Codex CLI 等）→ 先让 AI 基于目标照片生成一张涂鸦设计稿（**仅作元素布局参考**），叠网格量出各元素归一化坐标，再用引擎矢量笔迹在原图上复刻。完整步骤（生成命令、量坐标方法、并排比对质检）见 `references/design-replica.md`——**走此路径前必读**。
+2. **没有生图模型** → 不用参考，直接按下面的工作流程自行构思设计并画。
+
+两条路都要求：设计适配照片本身的风格与美感——色调、情绪、留白位置决定用色、元素密度与落点，不要把同一套元素硬套到所有照片上。
 
 ## 工作流程
 
@@ -41,7 +50,7 @@ d.save_video('out/v1-angel.mp4')          # 默认带卡通手+马克笔叠加�
 
 **引擎 API 速览**（细节读 `scripts/doodle_lib.py` 的 docstring 和方法签名）：
 - 基元：`stroke`（brush='marker'/'water'/'crayon'/'glitter'/'highlight'，color2= 渐变，taper='tip'/'both'）、`arc`、`dashed`、`dot`、`text`（中文自动切 CJK 字体）
-- 图案库：`sparkle` `star5` `heart` `crown` `halo` `speech_bubble` `arrow` `rainbow` `sun` `music_note` `paw_print` `cat_ears` `butterfly` `tape` `frame` `underline`
+- 图案库：`sparkle` `star5` `star4` `heart` `crown` `crown_sketch` `halo` `speech_bubble` `arrow` `rainbow` `sun` `music_note` `paw_print` `cat_ears` `butterfly` `tape` `frame` `underline` `raindrop` `flower` `dotflower` `bow`（`crown_sketch` 是贴纸感三尖皇冠，`star4` 是饱满四角星贴纸——比细线 `sparkle` 更像贴纸）
 - 色板：WHITE PINK HOTPINK CORAL PEACH YELLOW LEMON MINT SKY BLUE LAVENDER RED INK；`al(c,alpha)` `dk(c,f)` 调色
 - 字体 fname：'marker' 'chalk' 'hand' 'note' 'script' 'savoye' 'comic'（中文忽略此参数）
 

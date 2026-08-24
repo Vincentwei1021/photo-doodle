@@ -442,6 +442,74 @@ class Doodle:
         xm = (x0+x1)/2
         self.stroke([(x0, y - slope), (xm, y), (x1, y + slope)], brush=brush, color=color, w=w, under=False)
 
+    def raindrop(self, x, y, h, color=LAVENDER, w=3.0):
+        """teardrop outline: pointed top, round bottom; h = total height"""
+        pts = [(x, y - h*0.50),
+               (x + self.ax(h*0.24), y + h*0.04),
+               (x + self.ax(h*0.33), y + h*0.27),
+               (x, y + h*0.50),
+               (x - self.ax(h*0.33), y + h*0.27),
+               (x - self.ax(h*0.24), y + h*0.04)]
+        self.stroke(pts, color=color, w=w, wob=0.6, n=110, closed=True)
+
+    def star4(self, x, y, r, color=YELLOW, rot=0):
+        """plump filled 4-point star (chunky sticker sparkle, unlike thin-line sparkle)"""
+        pts = []
+        for i in range(8):
+            a = math.radians(rot - 90 + i*45)
+            rad = r if i % 2 == 0 else r*0.38
+            pts.append((x + self.ax(rad*math.cos(a)), y + rad*math.sin(a)))
+        self.poly([self.P(*p) for p in pts], color)
+        self.stroke(pts + [pts[0]], color=color, w=3.0, wob=0.5, n=100, under=False)
+
+    def flower(self, x, y, r, petals=6, color=WHITE, center=YELLOW, w=3.2, cr=0.006, phase=0.3):
+        """petal-outline flower + center dot; phase rotates the petal layout"""
+        for i in range(petals):
+            a = 2*math.pi*i/petals + phase
+            da = 0.55
+            pts = [(x + self.ax(r*0.18*math.cos(a)), y + r*0.18*math.sin(a)),
+                   (x + self.ax(r*0.62*math.cos(a-da)), y + r*0.62*math.sin(a-da)),
+                   (x + self.ax(r*math.cos(a)),        y + r*math.sin(a)),
+                   (x + self.ax(r*0.62*math.cos(a+da)), y + r*0.62*math.sin(a+da))]
+            self.stroke(pts, color=color, w=w, wob=0.6, n=70, closed=True)
+        if center:
+            self.dot(x, y, cr, color=center)
+
+    def dotflower(self, x, y, r, color=YELLOW, center=CORAL):
+        """tiny solid flower: 5 petal dots around a center dot"""
+        for i in range(5):
+            a = 2*math.pi*i/5 - math.pi/2
+            self.dot(x + self.ax(r*math.cos(a)), y + r*math.sin(a), r*0.55, color=color)
+        self.dot(x, y, r*0.42, color=center)
+
+    def bow(self, x, y, s, color=LAVENDER, w=2.8):
+        """small ribbon bow: two loops + knot dot"""
+        for sgn in (-1, 1):
+            pts = [(x + sgn*self.ax(s*0.15), y),
+                   (x + sgn*self.ax(s*0.95), y - s*0.55),
+                   (x + sgn*self.ax(s*1.05), y + s*0.30)]
+            self.stroke(pts, color=color, w=w, wob=0.5, n=60, closed=True)
+        self.dot(x, y, s*0.16, color=color)
+
+    def crown_sketch(self, x, y, w_=0.11, h_=0.054, color=WHITE, band=YELLOW):
+        """hand-sketched 3-peak crown: rings on the tips, double base line,
+        colored ribbon inside the base (the 'sticker' look, vs crown()'s jewel style)"""
+        xl, xr = x - w_/2, x + w_/2
+        lp = (x - w_*0.355, y - h_*0.86)
+        mp = (x,            y - h_*1.02)
+        rp = (x + w_*0.355, y - h_*0.90)
+        v1 = (x - w_*0.165, y - h_*0.36)
+        v2 = (x + w_*0.165, y - h_*0.38)
+        self.stroke([(xl, y), lp, v1, mp, v2, rp, (xr, y)], color=color, w=4.8, wob=0.8, n=240)
+        self.stroke([(xl, y), (x, y + 0.004), (xr, y - 0.001)], color=color, w=4.8, wob=0.7, n=60)
+        self.stroke([(xl + 0.001, y + 0.011), (x, y + 0.015), (xr - 0.001, y + 0.010)],
+                    color=color, w=4.0, wob=0.7, n=60, under=False)
+        for tx, ty in (lp, mp, rp):
+            self.arc(tx, ty - 0.009, 0.0055, 0.0055, 0, 360, color=color, w=3.4, wob=0.4)
+        if band:
+            self.stroke([(xl + 0.007, y + 0.007), (x, y + 0.0105), (xr - 0.007, y + 0.005)],
+                        color=band, w=5.2, wob=0.6, n=50, under=False)
+
     # ================= replay =================
 
     def _idx_range(self, op, f0, f1):
