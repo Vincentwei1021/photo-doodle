@@ -15,7 +15,7 @@
 - 左右肩外侧画翅膀：一条上缘长弧线（w≈5.5）+ 3-4 段扇贝形下缘（under=False 避免叠影）+ 2 条羽轴 taper='tip'
 - 翅膀内垫淡紫/粉水彩衬色（w≈22-26）
 - `sparkle` 每颗都要落在照片里真实的光点/高光上（**别"四散"撒——那是套路本身，问题在均匀撒而不在数量**）+ 指尖/手边 `heart`（要她真的在指什么才画）
-- **一版只许一句文字，英文 + 手写体**（`fname='marker'/'hand'/'note'`，配 `stroke_w=2.5` 加粗）+ `underline`（slope 匹配文字 rot，宽度用 `W_FAT`）；文案按 SKILL.md 硬禁止清单选，**`angel`/`golden hour` 这类抽象词不合格**
+- **一版只许一句文字，英文 + 手写体**（`fname='marker'/'hand'/'note'`；**醒目靠加大 `size`，不要用 `stroke_w`**——手写体本身就粗，描边会把字腔填死，引擎已把 `stroke_w` 夹在 1.0）+ `underline`（slope 匹配文字 rot，宽度用 `W_FAT`）；文案按 SKILL.md 硬禁止清单选，**`angel`/`golden hour` 这类抽象词不合格**
 
 ### 2. kitty 猫咪（"把人变成小猫"，对标小红书/抖音那种贴纸滤镜）
 
