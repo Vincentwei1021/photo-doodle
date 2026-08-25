@@ -833,6 +833,21 @@ class Doodle:
         else:
             wpx = max(1, int(round(w*S)))
             dr.line(pts, fill=color, width=wpx, joint='curve')
+            # ImageDraw's joint='curve' leaves hairline notches on the OUTER
+            # side of every vertex once the line is wide. At W_MED they're
+            # invisible; at W_BOLD/W_FAT they read as comb teeth along the edge
+            # (real bug report: a caption bar looked serrated). Density is NOT
+            # the fix -- it reproduces identically at n=60 and n=420. Round-cap
+            # every interior vertex instead. Skipped for thin lines so we don't
+            # pay for thousands of no-op ellipses.
+            if wpx > W_MED * self.wscale * S * 0.9 and len(pts) > 2:
+                r = wpx/2
+                # Cap EVERY interior vertex. Subsampling by r/2 leaves the
+                # notches behind whenever the path's own vertex spacing exceeds
+                # that stride (reproduced at n=60), and the ellipses are cheap
+                # next to the fat line itself.
+                for (x, y) in pts[1:-1]:
+                    dr.ellipse([x-r, y-r, x+r, y+r], fill=color)
             if caps:
                 r = wpx/2
                 for (x, y) in (pts[0], pts[-1]):
