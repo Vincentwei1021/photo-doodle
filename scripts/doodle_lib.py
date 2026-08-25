@@ -43,6 +43,22 @@ UNDER = (42, 62, 46, 78)         # offset underlay for contrast on bright areas
 PEN_SPEED = 1300.0  # px/s at final resolution
 FPS = 30
 
+# ---- stroke weight ladder ----------------------------------------------------
+# Authored in px for a 900px short side; Doodle scales every width by the real
+# image size (self.wscale), so the same number reads the same on a 900px selfie
+# and a 5712px DSLR frame. Real marker doodles have obvious weight contrast:
+# a fat gesture carries the picture, hair-thin ticks are detail. Using one
+# middling width everywhere is the single most common reason a version looks
+# weak and empty. audit() enforces >=3 tiers and at least one FAT/BOLD stroke.
+W_HAIR = 2.5     # 碎发、缝线、腮红一类细节
+W_THIN = 4.5     # 普通轮廓
+W_MED = 8.0      # 主要元素的默认粗细（比旧脚本的 2-3 明显粗）
+W_BOLD = 16.0    # 视觉重心：大字、主动线、贴纸轮廓
+W_FAT = 30.0     # 特粗：一版一两笔，粗横杠、涂满的形状
+# 比 W_FAT 还粗的东西（猫尾巴、绒球、大色块）直接传数字，别硬套梯子：
+# 参考图里那条毛绒猫尾巴约占图宽 10%，在 900px 短边上就是 w=90 左右。
+HANDWRITING = ('marker', 'chalk', 'hand', 'note', 'comic')  # 手写体 fname 白名单
+
 def dk(c, f, a=None):
     """darken color by factor f, optionally override alpha"""
     return (int(c[0]*f), int(c[1]*f), int(c[2]*f), a if a is not None else c[3])
@@ -212,7 +228,11 @@ class Doodle:
         self.img = base.resize((self.W*S, self.H*S), Image.LANCZOS).convert('RGBA')
         self.rng = random.Random(seed)
         self.ops = []
+        # every authored `w` / text `size` is multiplied by this, so the weight
+        # ladder (W_HAIR..W_FAT) means the same thing on any resolution.
+        self.wscale = min(self.W, self.H) / 900.0
         self._tally = {'star': 0, 'flower': 0, 'text': 0}
+        self._widths = []          # authored (pre-scale) widths, for audit()
         self._audit = None
 
     def P(self, x, y):
@@ -224,11 +244,18 @@ class Doodle:
 
     # ================= authoring: primitives =================
 
-    def stroke(self, pts, color=WHITE, w=5, wob=1.8, n=160, taper=None, under=True,
-               closed=False, kind='stroke', brush='marker', color2=None):
-        """pts: normalized points. w: width px. wob: hand-shake amplitude px.
-        taper: None|'tip'|'both'. brush: marker|water|crayon|glitter|highlight.
-        color2: gradient end color (marker only). under: dark offset underlay."""
+    def stroke(self, pts, color=WHITE, w=W_MED, wob=1.8, n=160, taper=None, under=True,
+               closed=False, kind='stroke', brush='marker', color2=None,
+               density=1.0, spread=1.0):
+        """pts: normalized points. w: width in ladder px (W_HAIR..W_FAT, authored
+        for a 900px short side and auto-scaled by self.wscale). wob: hand-shake
+        amplitude px. taper: None|'tip'|'both'.
+        brush: marker|water|crayon|glitter|highlight|fur.
+        color2: gradient end color (marker only). under: dark offset underlay.
+        density/spread: fur brush only (see fur())."""
+        self._widths.append(w)
+        w = w * self.wscale
+        wob = wob * self.wscale
         P = [self.P(*p) for p in pts]
         if closed:
             P = P + [P[0]]
@@ -236,6 +263,7 @@ class Doodle:
         d, L = arclens(path)
         op = {'kind': kind, 'path': path, 'd': d, 'L': L, 'color': color, 'color2': color2,
               'w': w, 'taper': taper, 'under': under, 'brush': brush,
+              'density': density, 'spread': spread,
               'seed': self.rng.randrange(1 << 30)}
         if brush == 'glitter':
             rr = random.Random(op['seed'])
@@ -253,8 +281,10 @@ class Doodle:
         self.ops.append(op)
         return path
 
-    def dashed(self, pts, color=WHITE, w=3.5, dash=0.012, gap=0.010, under=True):
-        P = add_wobble(catmull([self.P(*p) for p in pts], 300), 1.2*S, self.rng)
+    def dashed(self, pts, color=WHITE, w=6.0, dash=0.012, gap=0.010, under=True):
+        self._widths.append(w)
+        w = w * self.wscale
+        P = add_wobble(catmull([self.P(*p) for p in pts], 300), 1.2*S*self.wscale, self.rng)
         dp, gp = dash*self.H*S, gap*self.H*S
         seg, acc, on = [], 0.0, True
         for i, p in enumerate(P):
@@ -273,13 +303,27 @@ class Doodle:
     def dot(self, x, y, r, color=WHITE, under=True):
         self.ops.append({'kind': 'dot', 'c': self.P(x, y), 'r': r*self.H*S, 'color': color, 'under': under})
 
-    def poly(self, pts_px, color, under=True, layer='main'):
+    def poly(self, pts_px, color, under=True, layer='main', wob=0.0):
+        """wob > 0 蛇形抖动每条边（像素），让填充形状看起来是手画的。
+        默认 0 是为了兼容 star4/heart 那些内部已描边的图元；实心贴纸形状
+        （猫耳、掌垫）务必给 wob——不给会得到激光切割般的完美三角。"""
+        if wob > 0 and len(pts_px) >= 3:
+            dense = []
+            n = len(pts_px)
+            for i in range(n):
+                a, b = pts_px[i], pts_px[(i+1) % n]
+                seg = math.hypot(b[0]-a[0], b[1]-a[1])
+                k = max(2, int(seg/(3.0*S)))
+                for j in range(k):
+                    t = j/k
+                    dense.append((a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t))
+            pts_px = add_wobble(dense, wob*S, self.rng)
         cx = sum(p[0] for p in pts_px)/len(pts_px)
         cy = sum(p[1] for p in pts_px)/len(pts_px)
         self.ops.append({'kind': 'poly', 'pts': pts_px, 'ctr': (cx, cy), 'color': color,
                          'under': under, 'layer': layer})
 
-    def arc(self, cx, cy, rx, ry, a0, a1, color=WHITE, w=4, wob=1.2, n=90, taper=None,
+    def arc(self, cx, cy, rx, ry, a0, a1, color=WHITE, w=W_MED, wob=1.2, n=90, taper=None,
             under=True, brush='marker', color2=None):
         """rx expressed as fraction of height (aspect-corrected); a0/a1 degrees."""
         pts = []
@@ -290,18 +334,29 @@ class Doodle:
         return self.stroke(pts, color=color, w=w, wob=wob, n=n, taper=taper, under=under,
                            brush=brush, color2=color2)
 
-    def text(self, s, x, y, size, fname=None, color=WHITE, rot=0, under=True):
-        """fname: LATIN_FONTS key or filename; auto-falls back to CJK font for Chinese."""
+    def text(self, s, x, y, size, fname=None, color=WHITE, rot=0, under=True,
+             stroke_w=0, halo=0):
+        """fname: LATIN_FONTS key or filename; auto-falls back to CJK font for Chinese.
+        size is in ladder px (authored for a 900px short side, auto-scaled).
+        stroke_w: outline width in ladder px — use it to fake a fat marker nib
+        (a 40px font with stroke_w=3 reads much bolder than a thin 40px font).
+        halo: dark soft halo width in ladder px behind the glyphs. Use it on
+        DAPPLED backgrounds (tree shade, grass) where the mean L looks safe but
+        p90 is 190+: cranking stroke_w just fattens the letters into blobs, the
+        real fix is separating them from the background. 3-5 is usually enough."""
         self._tally['text'] += 1
         if fname is None:
             fname = 'marker'
         if has_cjk(s) and fname not in CJK_FONTS:
             fname = 'cjk'        # 手写体优先；要指定风格就直接传 'cjk-kuai'/'cjk-xing'
-        f = font(fname, size*S)
+        f = font(fname, size*S*self.wscale)
+        sw = int(round(stroke_w*S*self.wscale))
         probe = ImageDraw.Draw(Image.new('RGBA', (4, 4)))
-        b = probe.textbbox((0, 0), s, font=f)
+        b = probe.textbbox((0, 0), s, font=f,
+                           stroke_width=max(sw, int(round(halo*S*self.wscale))))
         self.ops.append({'kind': 'text', 's': s, 'font': f, 'bbox': b, 'color': color,
                          'rot': rot, 'under': under, 'center': self.P(x, y),
+                         'sw': sw, 'halo': halo*S*self.wscale,
                          'wpx': (b[2]-b[0])/S, '_cache': {}})
 
     # ================= authoring: motif library =================
@@ -310,7 +365,9 @@ class Doodle:
         """4-point twinkle (two crossing tapered strokes)."""
         self._tally['star'] += 1
         a = math.radians(rot)
-        ww = w or max(2.8, r*self.H*0.24)
+        # ladder units: r is a fraction of height, so scale off the 900px
+        # reference short side (NOT self.H — stroke() already scales for us)
+        ww = w or max(W_THIN, r*900*0.30)
         for ang in (a, a+math.pi/2):
             p1 = (x - r*math.cos(ang)*self.H/self.W, y - r*math.sin(ang))
             p2 = (x + r*math.cos(ang)*self.H/self.W, y + r*math.sin(ang))
@@ -325,9 +382,9 @@ class Doodle:
             pts.append((x + rad*math.cos(ang)*self.H/self.W, y + rad*math.sin(ang)))
         if fill:
             self.poly([self.P(*p) for p in pts], color)
-        self.stroke(pts + [pts[0]], color=WHITE, w=3.2, wob=0.8, n=140, under=not fill)
+        self.stroke(pts + [pts[0]], color=WHITE, w=W_MED, wob=0.8, n=140, under=not fill)
 
-    def heart(self, x, y, s, color=PINK, rot=0, fill=True, w=3.4, outline=WHITE):
+    def heart(self, x, y, s, color=PINK, rot=0, fill=True, w=W_BOLD, outline=WHITE):
         pts = []
         a = math.radians(rot)
         for i in range(40):
@@ -347,25 +404,25 @@ class Doodle:
                (x - w_*0.17, y - h_*0.18), (x, y - h_ - 0.004),
                (x + w_*0.17, y - h_*0.20 - tilt), (x + w_/2 - 0.004, y - h_*0.55 - tilt),
                (x + w_/2, y - tilt)]
-        self.stroke(pts, color=color, w=4.6, wob=1.1, n=200)
-        self.stroke([(x - w_/2, y + tilt), (x + w_/2, y - tilt)], color=color, w=4.6, wob=1.0, n=40)
+        self.stroke(pts, color=color, w=W_BOLD*0.75, wob=1.1, n=200)
+        self.stroke([(x - w_/2, y + tilt), (x + w_/2, y - tilt)], color=color, w=W_BOLD*0.75, wob=1.0, n=40)
         for (sx, sy) in [(x - w_/2 + 0.003, y - h_*0.56), (x, y - h_ - 0.010), (x + w_/2 - 0.004, y - h_*0.60)]:
             self.dot(sx, sy, 0.004, color=jewel)
 
     def halo(self, x, y, rx=0.075, color=WHITE):
         """double-stroked ellipse ring floating above a head"""
-        self.arc(x, y, rx, rx*0.27, -180, 178, color=color, w=6, wob=1.0)
-        self.arc(x, y + 0.007, rx, rx*0.27, -178, 180, color=color, w=4.5, wob=1.2, under=False)
+        self.arc(x, y, rx, rx*0.27, -180, 178, color=color, w=W_BOLD, wob=1.0)
+        self.arc(x, y + 0.007, rx, rx*0.27, -178, 180, color=color, w=W_MED, wob=1.2, under=False)
 
     def speech_bubble(self, x, y, rx=0.055, ry=0.033, tail='ll', color=WHITE):
         """ellipse bubble + tail. tail: 'll' lower-left or 'lr' lower-right."""
-        self.arc(x, y, rx, ry, 0, 360, color=color, w=4.5, wob=1.1)
+        self.arc(x, y, rx, ry, 0, 360, color=color, w=W_BOLD*0.8, wob=1.1)
         s_ = 1 if tail == 'll' else -1
         tx = x - s_*rx*0.8*self.H/self.W
         self.stroke([(tx, y + ry*0.85), (tx - s_*0.025, y + ry*0.85 + 0.030), (tx + s_*0.007, y + ry*0.95)],
-                    color=color, w=3.6, wob=0.6, taper='tip', n=40)
+                    color=color, w=W_MED, wob=0.6, taper='tip', n=40)
 
-    def arrow(self, pts, color=WHITE, w=3.8):
+    def arrow(self, pts, color=WHITE, w=W_MED):
         """curved annotation arrow; head drawn at the LAST point"""
         path = self.stroke(pts, color=color, w=w, wob=1.0, n=80)
         (x1, y1), (x0, y0) = path[-1], path[-min(8, len(path)-1)]
@@ -377,7 +434,7 @@ class Doodle:
                              'd': [0, hl], 'L': hl, 'color': color, 'color2': None,
                              'w': w, 'taper': None, 'under': False, 'brush': 'marker', 'seed': 0})
 
-    def rainbow(self, x, y, r=0.05, colors=(CORAL, LEMON, SKY), w=5.2):
+    def rainbow(self, x, y, r=0.05, colors=(CORAL, LEMON, SKY), w=W_BOLD):
         for i, col in enumerate(colors):
             rr_ = r * (1 - 0.22*i)
             self.arc(x, y, rr_, rr_*1.35, -178, -2, color=col, w=w, wob=0.7)
@@ -392,7 +449,7 @@ class Doodle:
         under: pass False on pale/warm backgrounds; the dark underlay can go
         muddy grey-green over a light wash."""
         fc = face_color or color
-        self.arc(x, y, r*1.3, r, 0, 360, color=color, w=4.6, wob=0.9, under=under)
+        self.arc(x, y, r*1.3, r, 0, 360, color=color, w=W_BOLD*0.85, wob=0.9, under=under)
         a0, a1 = span
         n = max(1, rays)
         step = (a1 - a0) / n if (a1 - a0) % 360 == 0 else (a1 - a0) / max(1, n - 1)
@@ -400,11 +457,11 @@ class Doodle:
             a = math.radians(a0 + k*step)
             self.stroke([(x + r*1.6*math.cos(a)*self.H/self.W, y + r*1.3*math.sin(a)),
                          (x + r*2.3*math.cos(a)*self.H/self.W, y + r*1.9*math.sin(a))],
-                        color=color, w=3.4, wob=0.5, taper='tip', n=40, under=under)
+                        color=color, w=W_MED, wob=0.5, taper='tip', n=40, under=under)
         if face:
             for ox in (-0.010, 0.012):
-                self.arc(x + ox, y + 0.002, 0.004, 0.004, 20, 160, color=fc, w=2.4, wob=0.3, under=False)
-            self.arc(x + 0.001, y + 0.011, 0.007, 0.005, 20, 160, color=fc, w=2.4, wob=0.3, under=False)
+                self.arc(x + ox, y + 0.002, 0.004, 0.004, 20, 160, color=fc, w=W_THIN, wob=0.3, under=False)
+            self.arc(x + 0.001, y + 0.011, 0.007, 0.005, 20, 160, color=fc, w=W_THIN, wob=0.3, under=False)
             if blush:
                 self.dot(x - 0.015, y + 0.008, 0.0035, color=blush, under=False)
                 self.dot(x + 0.016, y + 0.008, 0.0035, color=blush, under=False)
@@ -412,16 +469,34 @@ class Doodle:
     def music_note(self, x, y, s=1.0, color=WHITE):
         self.dot(x, y, 0.0085*s, color=color)
         stem = x + self.ax(0.0105*s)
-        self.stroke([(stem, y), (stem, y - 0.052*s)], color=color, w=3.6, wob=0.5, n=40)
+        self.stroke([(stem, y), (stem, y - 0.052*s)], color=color, w=W_MED, wob=0.5, n=40)
         self.stroke([(stem, y - 0.052*s), (x + self.ax(0.030*s), y - 0.040*s)],
-                    color=color, w=3.6, wob=0.5, taper='tip', n=30)
+                    color=color, w=W_MED, wob=0.5, taper='tip', n=30)
 
-    def paw_print(self, x, y, s=1.0, color=PINK):
+    def paw_print(self, x, y, s=1.0, color=PINK, rot=-90, toes=4):
+        """猫爪印：一个宽椭圆大掌垫 + 上方 4 颗趾垫。
+        rot 是"脚趾朝向"的角度（-90 = 朝上，即向画面上方走）。
+        旧版是 1 个圆掌垫 + 3 颗等距趾垫、间距 1.55r，画出来是一串气泡
+        （真实返工原因）；掌垫改成宽椭圆、趾垫收到 1.25r 才读成爪印。"""
         r = 0.011*s
-        self.dot(x, y, r, color=color)
-        for k in range(3):
-            ang = math.radians(200 + k*70)
-            self.dot(x + 1.55*r*math.cos(ang)*self.H/self.W, y + 1.55*r*math.sin(ang), r*0.42, color=color)
+        a0 = math.radians(rot)
+        # 掌垫：宽 > 高的实心椭圆。用 arc 描边会得到一个空心圈（返工原因），
+        # 必须用 poly 填实。
+        pad = []
+        for i in range(28):
+            a = 2*math.pi*i/28
+            pad.append(self.P(x + self.ax(r*1.15*math.cos(a)), y + r*0.94*math.sin(a)))
+        self.poly(pad, color, wob=0.8)
+        span = 104.0
+        for k in range(toes):
+            t = (k/(toes-1) - 0.5) if toes > 1 else 0.0
+            ang = a0 + math.radians(t*span)
+            # 外侧两趾略往外撇、略小，中间两趾更高更大
+            edge = abs(t)*2
+            rad = 1.52*r*(1.0 + 0.06*edge)
+            tr = r*(0.42 - 0.09*edge)
+            self.dot(x + rad*math.cos(ang)*self.H/self.W, y + rad*math.sin(ang),
+                     tr, color=color)
 
     def cat_ears(self, lx, ly, rx_, ry_, s=1.0, color=WHITE, inner=HOTPINK):
         """two ears; (lx,ly)/(rx_,ry_) are the left/right ear base centers on the hair"""
@@ -429,21 +504,46 @@ class Doodle:
             tipx, tipy = bx + sgn*(-0.033*s), by - 0.070*s
             self.stroke([(bx - sgn*0.040*s, by), (tipx, tipy + 0.006), (tipx + sgn*0.008, tipy),
                          (bx + sgn*0.005, by - 0.045*s), (bx + sgn*0.048*s, by - 0.012*s)],
-                        color=color, w=5.5*s, wob=0.9, n=120)
+                        color=color, w=W_BOLD*s, wob=0.9, n=120)
             if inner:
                 self.stroke([(bx - sgn*0.008*s, by - 0.020*s), (tipx + sgn*0.014, tipy + 0.022*s),
                              (bx + sgn*0.006*s, by - 0.032*s)],
-                            color=inner, w=3.6*s, wob=0.6, under=False, n=50)
+                            color=inner, w=W_MED*s, wob=0.6, under=False, n=50)
+
+    def cat_ears_sticker(self, lx, ly, rx_, ry_, w_=0.052, h_=0.062, lean=0.012,
+                         color=WHITE, inner=PINK, fill=True):
+        """贴纸感猫耳（cat_ears 是描边款，这个是实心三角款）。
+        (lx,ly)/(rx_,ry_) 是左右耳根中心——必须落在实测发际线上。
+        踩过的坑：用 stroke 描一条 3 点折线得到的是圆拱（读成兔耳），
+        猫耳必须是**尖角实心三角**：fill=True 用 poly 填，尖端不倒角。
+        w_ 是耳根半宽、h_ 是耳高（都是占图高的比例）；w_/h_ 建议 0.8~0.9，
+        比 1 小很多就会重新变成兔耳。"""
+        for (bx, by), sgn in (((lx, ly), -1), ((rx_, ry_), 1)):
+            tip = (bx + sgn*lean, by - h_)
+            out = [(bx - sgn*w_, by + 0.004), tip, (bx + sgn*w_, by - 0.002)]
+            if fill:
+                # wob 必须给：不给会得到激光切割般的完美三角，一眼看出是程序画的
+                self.poly([self.P(*p) for p in out], color, wob=1.5)
+            else:
+                self.stroke(out, color=color, w=W_FAT, wob=0.5, n=280, under=True)
+            if inner:
+                iw, ih = w_*0.50, h_*0.58
+                itip = (tip[0] + sgn*0.002, by - ih)
+                ip = [(bx - sgn*iw, by - 0.004), itip, (bx + sgn*iw, by - 0.008)]
+                if fill:
+                    self.poly([self.P(*p) for p in ip], inner, wob=1.2, under=False)
+                else:
+                    self.stroke(ip, color=inner, w=W_BOLD, wob=0.4, n=200, under=False)
 
     def butterfly(self, x, y, s=1.0, wing=LAVENDER):
         self.stroke([(x - self.ax(0.007*s), y), (x - self.ax(0.019*s), y - 0.017*s), (x - self.ax(0.009*s), y - 0.007*s)],
                     brush='water', color=wing, w=13*s, under=False)
         self.stroke([(x + self.ax(0.007*s), y), (x + self.ax(0.021*s), y - 0.016*s), (x + self.ax(0.010*s), y - 0.005*s)],
                     brush='water', color=wing, w=13*s, under=False)
-        self.stroke([(x, y - 0.016*s), (x, y + 0.008*s)], w=3.0*s, wob=0.4, n=30)
+        self.stroke([(x, y - 0.016*s), (x, y + 0.008*s)], w=W_MED*s, wob=0.4, n=30)
         for sgn in (-1, 1):
             self.stroke([(x, y - 0.014*s), (x + sgn*self.ax(0.008*s), y - 0.026*s)],
-                        w=2.2*s, wob=0.3, taper='tip', n=20, under=False)
+                        w=W_THIN*s, wob=0.3, taper='tip', n=20, under=False)
 
     def tape(self, x, y, w_, h_, rot, color):
         """washi tape: translucent rotated rectangle (wash layer, soft edges)"""
@@ -456,7 +556,7 @@ class Doodle:
             pp.append(self.P(x + rx*self.H/self.W, y + ry))
         self.poly(pp, color, under=False, layer='wash')
 
-    def frame(self, m=0.030, color=WHITE, w=4.5):
+    def frame(self, m=0.030, color=WHITE, w=W_MED):
         """hand-drawn border just inside the photo edges"""
         my = m*1.35
         self.stroke([(m, my), (0.5, my - 0.004), (1-m, my)], color=color, w=w, wob=1.6, n=200)
@@ -464,12 +564,12 @@ class Doodle:
         self.stroke([(1-m, 1-my), (0.5, 1-my+0.004), (m, 1-my)], color=color, w=w, wob=1.6, n=200)
         self.stroke([(m, 1-my), (m-0.003, 0.5), (m, my)], color=color, w=w, wob=1.6, n=200)
 
-    def underline(self, x0, x1, y, color=PINK, brush='highlight', w=14, slope=0.0):
+    def underline(self, x0, x1, y, color=PINK, brush='highlight', w=W_FAT, slope=0.0):
         """swash under text; slope tilts to match rotated text"""
         xm = (x0+x1)/2
         self.stroke([(x0, y - slope), (xm, y), (x1, y + slope)], brush=brush, color=color, w=w, under=False)
 
-    def raindrop(self, x, y, h, color=LAVENDER, w=3.0):
+    def raindrop(self, x, y, h, color=LAVENDER, w=W_MED):
         """teardrop outline: pointed top, round bottom; h = total height"""
         pts = [(x, y - h*0.50),
                (x + self.ax(h*0.24), y + h*0.04),
@@ -488,9 +588,9 @@ class Doodle:
             rad = r if i % 2 == 0 else r*0.38
             pts.append((x + self.ax(rad*math.cos(a)), y + rad*math.sin(a)))
         self.poly([self.P(*p) for p in pts], color)
-        self.stroke(pts + [pts[0]], color=color, w=3.0, wob=0.5, n=100, under=False)
+        self.stroke(pts + [pts[0]], color=color, w=W_MED, wob=0.5, n=100, under=False)
 
-    def flower(self, x, y, r, petals=6, color=WHITE, center=YELLOW, w=3.2, cr=0.006, phase=0.3):
+    def flower(self, x, y, r, petals=6, color=WHITE, center=YELLOW, w=W_MED, cr=0.006, phase=0.3):
         """petal-outline flower + center dot; phase rotates the petal layout"""
         self._tally['flower'] += 1
         for i in range(petals):
@@ -512,7 +612,7 @@ class Doodle:
             self.dot(x + self.ax(r*math.cos(a)), y + r*math.sin(a), r*0.55, color=color)
         self.dot(x, y, r*0.42, color=center)
 
-    def bow(self, x, y, s, color=LAVENDER, w=2.8):
+    def bow(self, x, y, s, color=LAVENDER, w=W_MED):
         """small ribbon bow: two loops + knot dot"""
         for sgn in (-1, 1):
             pts = [(x + sgn*self.ax(s*0.15), y),
@@ -520,6 +620,156 @@ class Doodle:
                    (x + sgn*self.ax(s*1.05), y + s*0.30)]
             self.stroke(pts, color=color, w=w, wob=0.5, n=60, closed=True)
         self.dot(x, y, s*0.16, color=color)
+
+    def fur(self, pts, color=WHITE, w=W_FAT, wob=0.8, n=260, taper=None,
+            density=1.0, spread=1.0, under=False):
+        """毛绒笔画：软核心 + 向外喷开的碎毛边，用来画猫尾巴、绒球、毛领子。
+        参考图里那条又粗又毛的白猫尾巴就是这个——普通 marker 画出来是塑料软管，
+        毛边才是"绒"的来源。w 建议 W_BOLD~W_FAT（细的毛笔画看不出毛）。
+        spread: 碎毛伸出多远（1.0 ≈ 半个线宽）。density: 碎毛密度。"""
+        return self.stroke(pts, color=color, w=w, wob=wob, n=n, taper=taper,
+                           under=under, brush='fur', density=density, spread=spread)
+
+    def blob(self, x, y, rx, ry=None, color=WHITE, alpha=120, steps=16, rot=0):
+        """软发光块：一坨中心实、边缘化开的柔光。参考图里颜文字外面那团白雾就是它。
+        画在 wash 层（最底），所以可以先铺它、再在上面写字/画线。
+        rx/ry 是占图高的比例；alpha 是中心最大不透明度（120 已经很明显）。"""
+        ry = rx if ry is None else ry
+        self.ops.append({'kind': 'blob', 'c': self.P(x, y), 'rx': rx*self.H*S,
+                         'ry': ry*self.H*S, 'color': color, 'alpha': alpha,
+                         'steps': steps, 'rot': rot, 'under': False, '_cache': {}})
+
+    def emo_face(self, x, y, s=1.0, eyes='^^', mouth='w', arms=None,
+                 color=WHITE, w=None, under=False):
+        """手画颜文字（真笔迹，不是字体）：(^ω^) 这类脸。
+        字体路线走不通——系统里能显示 ω ᐢ ˃ ▽ 这些字符的只有印刷黑体，
+        用它写颜文字会跟中文黑体一样出戏；而且颜文字算"文字元素"，一版只许一句话。
+        画出来就不算文字，还能任意组合。
+        eyes:  '^^' | '••' | '>_<' | '˘˘' | '--' | 'oo'
+        mouth: 'w'（ω）| 'o' | '3' | '_' | 'v'
+        arms:  None | 'yo'（两边加 ヨ 那种小爪子）| 'paw'
+        under: 斑驳背景（树影、草地）上开 True，靠深色底影才读得清"""
+        w = w or W_MED*max(0.6, s*0.9)
+        U = under
+        E = 0.026*s          # eye half-spacing (fraction of height)
+        def sx(dx):
+            return x + self.ax(dx)
+        # ---- eyes
+        for sgn in (-1, 1):
+            ex = sx(sgn*E)
+            if eyes == '^^':
+                self.stroke([(sx(sgn*E - 0.013*s), y + 0.008*s), (ex, y - 0.008*s),
+                             (sx(sgn*E + 0.013*s), y + 0.008*s)],
+                            color=color, w=w, wob=0.3, n=70, under=U)
+            elif eyes == '>_<':
+                d_ = -sgn      # both point inward
+                self.stroke([(sx(sgn*E - d_*0.012*s), y - 0.010*s), (sx(sgn*E + d_*0.008*s), y),
+                             (sx(sgn*E - d_*0.012*s), y + 0.010*s)],
+                            color=color, w=w, wob=0.3, n=70, under=U)
+            elif eyes == '˘˘':
+                self.arc(ex, y + 0.004*s, 0.012*s, 0.009*s, 190, 350,
+                         color=color, w=w, wob=0.3, n=60, under=U)
+            elif eyes == '--':
+                self.stroke([(sx(sgn*E - 0.012*s), y), (sx(sgn*E + 0.012*s), y)],
+                            color=color, w=w, wob=0.3, n=40, under=U)
+            elif eyes == 'oo':
+                self.arc(ex, y, 0.010*s, 0.011*s, 0, 360, color=color, w=w,
+                         wob=0.3, n=70, under=U)
+            else:  # '••'
+                self.dot(ex, y, 0.008*s, color=color, under=U)
+        # ---- mouth
+        my = y + 0.024*s
+        if mouth == 'w':      # ω: two lobes
+            u = 0.017*s
+            self.stroke([(sx(-1.05*u), my - 0.004*s), (sx(-0.72*u), my + 0.010*s),
+                         (sx(-0.34*u), my + 0.008*s), (x, my - 0.007*s),
+                         (sx(0.34*u), my + 0.008*s), (sx(0.72*u), my + 0.010*s),
+                         (sx(1.05*u), my - 0.004*s)],
+                        color=color, w=w, wob=0.3, n=180, under=U)
+        elif mouth == 'o':
+            self.arc(x, my + 0.002*s, 0.010*s, 0.011*s, 0, 360, color=color, w=w,
+                     wob=0.3, n=80, under=U)
+        elif mouth == '3':
+            u = 0.014*s
+            self.stroke([(sx(-1.1*u), my - 0.006*s), (sx(-0.2*u), my + 0.008*s),
+                         (sx(-0.55*u), my + 0.001*s), (sx(-0.2*u), my + 0.016*s),
+                         (sx(-1.1*u), my + 0.024*s)],
+                        color=color, w=w, wob=0.3, n=150, under=U)
+        elif mouth == 'v':
+            self.stroke([(sx(-0.016*s), my - 0.004*s), (x, my + 0.010*s),
+                         (sx(0.016*s), my - 0.004*s)],
+                        color=color, w=w, wob=0.3, n=70, under=U)
+        else:  # '_'
+            self.stroke([(sx(-0.016*s), my), (sx(0.016*s), my)],
+                        color=color, w=w, wob=0.3, n=40, under=U)
+        # ---- side arms / paws
+        if arms == 'yo':      # ヨ: three bars + a spine, mirrored
+            for sgn in (-1, 1):
+                bx = sx(sgn*0.058*s)
+                self.stroke([(bx, y - 0.019*s), (bx, y + 0.026*s)],
+                            color=color, w=w, wob=0.3, n=60, under=U)
+                for k, yy in enumerate((-0.019, 0.004, 0.026)):
+                    self.stroke([(bx, y + yy*s), (sx(sgn*0.058*s - sgn*0.019*s), y + yy*s)],
+                                color=color, w=w, wob=0.3, n=40, under=U)
+        elif arms == 'paw':
+            for sgn in (-1, 1):
+                self.stroke([(sx(sgn*0.050*s), y + 0.020*s), (sx(sgn*0.064*s), y - 0.004*s),
+                             (sx(sgn*0.052*s), y - 0.010*s)],
+                            color=color, w=w, wob=0.4, n=90, under=U)
+
+    def fish(self, x, y, s=1.0, color=WHITE, w=None, flip=False, under=False):
+        """小鱼轮廓（参考图里游在墙上的那三条）：一条闭合的身体 + 尾巴 + 眼点。
+        s=1.0 时身长约占图高 0.05。flip 反向游。
+        under=True 给深色底影——浅色（MINT 等）画在亮背景上必须开，否则看不见。"""
+        w = w or W_MED
+        f = -1 if flip else 1
+        # Body must be a fat rounded teardrop, not a lens: the first version
+        # used L=0.030/Hh=0.013 (ratio 2.3) with a shallow tail notch and every
+        # fish read as an arrowhead. A blunt nose + tall tail fin fixes it.
+        L, Hh = 0.024*s, 0.015*s
+        pts = [(x + self.ax(f*L*0.95), y + Hh*0.10),          # blunt nose
+               (x + self.ax(f*L*0.62), y - Hh*0.80),          # forehead
+               (x + self.ax(f*L*0.05), y - Hh*1.00),          # back
+               (x - self.ax(f*L*0.45), y - Hh*0.62),          # waist to tail
+               (x - self.ax(f*L*0.78), y - Hh*1.45),          # tail top tip
+               (x - self.ax(f*L*0.58), y),                    # tail notch (deep)
+               (x - self.ax(f*L*0.78), y + Hh*1.45),          # tail bottom tip
+               (x - self.ax(f*L*0.45), y + Hh*0.62),
+               (x + self.ax(f*L*0.05), y + Hh*0.98),          # belly
+               (x + self.ax(f*L*0.62), y + Hh*0.74)]
+        self.stroke(pts, color=color, w=w, wob=0.4, n=320, closed=True, under=under)
+        self.dot(x + self.ax(f*L*0.52), y - Hh*0.16, 0.0032*s, color=color, under=under)
+
+    def pixel_sprite(self, rows, x, y, cell, legend, anchor='center', under=False):
+        """像素画：用字符网格画贴纸（参考图里那个 Hello Kitty 就是像素贴纸）。
+        rows:   字符串列表，一个字符 = 一格；空格/'.' = 透明
+        cell:   一格的边长（占图高的比例），0.006 左右适合小贴纸
+        legend: {字符: 颜色}
+        每一行里连续同色的格子合成一个矩形，所以视频里是"一行行刷出来"而不是
+        几百个点各自闪现（也避免了几百个 op 把视频拖到十几分钟）。"""
+        nrow = len(rows)
+        ncol = max(len(r) for r in rows) if nrow else 0
+        wpx, hpx = self.ax(cell), cell
+        if anchor == 'center':
+            x0, y0 = x - wpx*ncol/2, y - hpx*nrow/2
+        else:                       # 'tl'
+            x0, y0 = x, y
+        for r, row in enumerate(rows):
+            c = 0
+            while c < len(row):
+                ch = row[c]
+                if ch in (' ', '.', '_') or ch not in legend:
+                    c += 1
+                    continue
+                c2 = c
+                while c2 + 1 < len(row) and row[c2+1] == ch:
+                    c2 += 1
+                px0, px1 = x0 + wpx*c, x0 + wpx*(c2+1)
+                py0, py1 = y0 + hpx*r, y0 + hpx*(r+1)
+                self.poly([self.P(px0, py0), self.P(px1, py0),
+                           self.P(px1, py1), self.P(px0, py1)],
+                          legend[ch], under=under)
+                c = c2 + 1
 
     def crown_sketch(self, x, y, w_=0.11, h_=0.054, color=WHITE, band=YELLOW):
         """hand-sketched 3-peak crown: rings on the tips, double base line,
@@ -530,15 +780,15 @@ class Doodle:
         rp = (x + w_*0.355, y - h_*0.90)
         v1 = (x - w_*0.165, y - h_*0.36)
         v2 = (x + w_*0.165, y - h_*0.38)
-        self.stroke([(xl, y), lp, v1, mp, v2, rp, (xr, y)], color=color, w=4.8, wob=0.8, n=240)
-        self.stroke([(xl, y), (x, y + 0.004), (xr, y - 0.001)], color=color, w=4.8, wob=0.7, n=60)
+        self.stroke([(xl, y), lp, v1, mp, v2, rp, (xr, y)], color=color, w=W_BOLD*0.8, wob=0.8, n=240)
+        self.stroke([(xl, y), (x, y + 0.004), (xr, y - 0.001)], color=color, w=W_BOLD*0.8, wob=0.7, n=60)
         self.stroke([(xl + 0.001, y + 0.011), (x, y + 0.015), (xr - 0.001, y + 0.010)],
-                    color=color, w=4.0, wob=0.7, n=60, under=False)
+                    color=color, w=W_MED, wob=0.7, n=60, under=False)
         for tx, ty in (lp, mp, rp):
-            self.arc(tx, ty - 0.009, 0.0055, 0.0055, 0, 360, color=color, w=3.4, wob=0.4)
+            self.arc(tx, ty - 0.009, 0.0055, 0.0055, 0, 360, color=color, w=W_MED, wob=0.4)
         if band:
             self.stroke([(xl + 0.007, y + 0.007), (x, y + 0.0105), (xr - 0.007, y + 0.005)],
-                        color=band, w=5.2, wob=0.6, n=50, under=False)
+                        color=band, w=W_BOLD*0.75, wob=0.6, n=50, under=False)
 
     # ================= replay =================
 
@@ -618,6 +868,52 @@ class Doodle:
         delta = ((op['w']+7)*S) / op['L']
         self._draw_path_part(dw, op, max(0.0, f0-delta), f1, color=center, w=op['w'])
 
+    def _draw_fur_part(self, dm, op, f0, f1):
+        """soft core + outward flicks. The flicks are what read as 'fur' —
+        a plain marker stroke at the same width reads as a plastic tube."""
+        path, d, L = op['path'], op['d'], op['L']
+        prof = self._profile(op)
+        R0 = op['w']*S/2
+        # 1. soft core, slightly narrower so the flicks form the real silhouette
+        self._draw_path_part(dm, op, f0, f1, w=op['w']*0.86)
+        # 2. flicks along BOTH rims. Two earlier attempts failed and the reasons
+        #    are worth keeping: long flicks (out up to 1.5R, tilt up to 2.2)
+        #    turned into twigs and the thing read as a bramble; low alpha
+        #    (120-210) made them grey against the white core so it read as wire
+        #    wrapped in tape. Fur = MANY, SHORT (0.10-0.30R), OPAQUE flicks
+        #    hugging the rim, tilted back along the stroke.
+        step = max(1.2*S, R0*0.16) / max(op.get('density', 1.0), 0.05)
+        n_st = max(6, int(L/step))
+        i_a, i_b = int(f0*n_st), int(min(1.0, f1)*n_st) + (1 if f1 >= 1.0 else 0)
+        spread = op.get('spread', 1.0)
+        col = al(op['color'], 255)
+        for i in range(max(0, i_a), min(i_b, n_st)):
+            s_ = i/(n_st-1) if n_st > 1 else 0.0
+            idx = min(bisect.bisect_left(d, s_*L), len(path)-1)
+            x, y = path[idx]
+            R = R0 * (prof(s_) if prof else 1.0)
+            if R <= 0.8:
+                continue
+            j = max(1, idx if idx else 1)
+            dx, dy = path[j][0]-path[j-1][0], path[j][1]-path[j-1][1]
+            m = math.hypot(dx, dy) or 1.0
+            ux, uy = dx/m, dy/m
+            nx, ny = -uy, ux
+            rr = random.Random(op['seed'] + i*7919)
+            for sgn in (-1, 1):
+                if rr.random() < 0.18:          # a few gaps, so it isn't a comb
+                    continue
+                base = R*rr.uniform(0.68, 0.90)*sgn
+                # ~12% stray long hairs; without them the rim is a tidy comb
+                lf = rr.uniform(1.8, 2.8) if rr.random() < 0.12 else 1.0
+                out = R*spread*rr.uniform(0.10, 0.32)*lf*sgn
+                tilt = rr.choice((-1, 1)) * rr.uniform(0.3, 1.0)
+                bx, by = x + nx*base, y + ny*base
+                tx = x + nx*(base+out) + ux*abs(out)*tilt
+                ty = y + ny*(base+out) + uy*abs(out)*tilt
+                tw = max(1, int(R*rr.uniform(0.05, 0.11)))
+                dm.line([(bx, by), (tx, ty)], fill=col, width=tw)
+
     def _draw_glitter_part(self, dm, op, f0, f1):
         self._draw_path_part(dm, op, f0, f1, w=op['w'])
         for (u, x, y, typ, sz, col) in op['specks']:
@@ -640,6 +936,8 @@ class Doodle:
                 self._draw_path_part(dw, op, max(0.0, f0-d2), f1, color=al(op['color'], 95), caps=False)
             elif b == 'crayon':
                 self._draw_crayon_part(dm, op, f0, f1)
+            elif b == 'fur':
+                self._draw_fur_part(dm, op, f0, f1)
             elif b == 'glitter':
                 self._draw_glitter_part(dm, op, f0, f1)
             else:
@@ -660,6 +958,47 @@ class Doodle:
             if op['under']:
                 du.polygon([(x+1.8*S, y+2.2*S) for x, y in pp], fill=UNDER)
             tgt.polygon(pp, fill=op['color'])
+        # 'blob' is intentionally not handled here — like text, it is
+        # re-rendered fresh every frame from its progress fraction (see
+        # _blob_tile / _composite). Accumulating a soft glow onto a layer
+        # would keep adding alpha and blow out to a white patch.
+
+    def _blob_tile(self, op, f):
+        """soft radial glow as an RGBA tile + paste position, at progress f.
+        Built with a real distance falloff instead of concentric ImageDraw
+        ellipses — `fill=` replaces alpha rather than accumulating it, so rings
+        come out as flat bands (the first version rendered a grey rectangle)."""
+        f = min(1.0, max(0.0, f))
+        if f <= 0.01:
+            return None
+        key = round(f, 2)
+        if key in op['_cache']:
+            return op['_cache'][key]
+        rx, ry = op['rx']*f, op['ry']*f
+        if rx < 2 or ry < 2:
+            return None
+        # render small then upscale: a 128px falloff blurs to the same result
+        # and costs ~1% of the pixels at full res
+        n = 96
+        m = Image.new('L', (n, n))
+        px = m.load()
+        for j in range(n):
+            dy = (j + 0.5)/n*2 - 1
+            for i in range(n):
+                dx = (i + 0.5)/n*2 - 1
+                r = math.hypot(dx, dy)
+                px[i, j] = 0 if r >= 1 else int(op['alpha'] * (1.0 - r)**1.9)
+        m = m.resize((int(rx*2), int(ry*2)), Image.BILINEAR)
+        if op['rot']:
+            m = m.rotate(op['rot'], expand=True, resample=Image.BILINEAR)
+        tile = Image.new('RGBA', m.size, tuple(op['color'][:3]) + (0,))
+        tile.putalpha(m)
+        cx, cy = op['c']
+        pos = (int(cx - tile.width/2), int(cy - tile.height/2))
+        res = (tile, pos)
+        if f >= 1.0:
+            op['_cache'][1.0] = res
+        return res
 
     def _text_img(self, op, f):
         f = min(1.0, max(0.0, f))
@@ -671,9 +1010,19 @@ class Doodle:
         full = Image.new('RGBA', (b[2]-b[0]+pad*2, b[3]-b[1]+pad*2), (0, 0, 0, 0))
         td = ImageDraw.Draw(full)
         ox, oy = pad-b[0], pad-b[1]
+        sw = op.get('sw', 0)
+        ha = int(round(op.get('halo', 0)))
+        if ha > 0:
+            hl = Image.new('RGBA', full.size, (0, 0, 0, 0))
+            ImageDraw.Draw(hl).text((ox, oy), op['s'], font=op['font'],
+                                    fill=(0, 0, 0, 0), stroke_width=ha,
+                                    stroke_fill=(30, 34, 30, 190))
+            full.alpha_composite(hl.filter(ImageFilter.GaussianBlur(ha*0.6)))
         if op['under']:
-            td.text((ox+1.8*S, oy+2.2*S), op['s'], font=op['font'], fill=UNDER)
-        td.text((ox, oy), op['s'], font=op['font'], fill=op['color'])
+            td.text((ox+1.8*S, oy+2.2*S), op['s'], font=op['font'], fill=UNDER,
+                    stroke_width=sw, stroke_fill=UNDER)
+        td.text((ox, oy), op['s'], font=op['font'], fill=op['color'],
+                stroke_width=sw, stroke_fill=op['color'])
         if f < 1.0:
             wcut = int(full.width * f)
             mask = Image.new('L', full.size, 0)
@@ -687,7 +1036,13 @@ class Doodle:
             op['_cache'][1.0] = res
         return res
 
-    def _composite(self, wash_layer, under_layer, main_layer, texts):
+    def _composite(self, wash_layer, under_layer, main_layer, texts, blobs=()):
+        if blobs:
+            wash_layer = wash_layer.copy()
+            for op, f in blobs:
+                t = self._blob_tile(op, f)
+                if t is not None:
+                    wash_layer.alpha_composite(t[0], t[1])
         wash = wash_layer.filter(ImageFilter.GaussianBlur(2.2*S))
         glow = main_layer.filter(ImageFilter.GaussianBlur(3.5*S))
         glow.putalpha(glow.getchannel('A').point(lambda a: int(a*0.38)))
@@ -711,7 +1066,20 @@ class Doodle:
                   An element whose `why` is empty is by definition generic filler
                   -> hard error. `family` per element: True/'main' if it belongs
                   to the dominant family, False/'other' otherwise.
-        portrait: True for people-centric photos (enforces the <=3 text cap)
+        portrait: True for people-centric photos (tightens the text cap to 1)
+
+        What is checked (and what deliberately is NOT):
+          - HARD: every element must state what photo fact it depends on.
+          - HARD: at most ONE text element. Text is the loudest, most
+            genre-defining mark; two captions already read like a template.
+          - HARD: line weights must span >=3 tiers AND include one >=W_BOLD.
+            One middling width everywhere is why versions looked thin/empty.
+          - NOT checked: how many stars / flowers / off-family elements you
+            drew. Those caps used to exist and were removed on purpose: naming
+            specific shapes as forbidden is still using concrete content as the
+            instruction, just inverted, and it misfires whenever flowers or
+            stars genuinely fit the photo. The anti-cliche pressure lives in
+            the `why` requirement, not in a blocklist.
 
         Why executable instead of a comment block: comments are written once and
         go stale silently across iterations. A real agent audited its v1 script,
@@ -736,16 +1104,32 @@ class Doodle:
         errs, warns = [], []
         if nowhy:
             errs.append(f'这些元素没写"依据照片什么"，属于无来由的通用装饰，删掉或给出依据: {nowhy}')
-        if len(offf) > 4:
-            errs.append(f'外家族元素 {len(offf)} 个 > 上限 4 个: {offf}')
-        if self._tally['star'] > 8:
-            errs.append(f"sparkle/star4/star5 实测共 {self._tally['star']} 个 > 上限 8 个（撒星套路）")
-        if self._tally['flower'] and '植物' not in str(family):
-            errs.append(f"主导家族是「{family}」却画了 {self._tally['flower']} 个 flower/dotflower"
-                        '——花只能在"人物与植物直接互动"时作主导（撒花套路）')
-        lim_text = 4 if portrait else 6
-        if self._tally['text'] > lim_text:
-            errs.append(f"文字元素实测 {self._tally['text']} 个 > 上限 {lim_text} 个（宜家说明图）")
+        if self._tally['text'] > 1:
+            errs.append(f"文字实测 {self._tally['text']} 处 > 上限 1 处。"
+                        '一版只留一句，英文 + 手写体；其余想说的话改成图形表达')
+        # 笔画粗细必须分层。这条是硬闸：用户反馈"线条太细、全是细的"，
+        # 而元素数量足够时看起来仍然弱，根源就是没有粗细对比。
+        if self._widths:
+            tiers = set()
+            for w in self._widths:
+                if w >= W_FAT * 0.85:
+                    tiers.add('fat')
+                elif w >= W_BOLD * 0.85:
+                    tiers.add('bold')
+                elif w >= W_MED * 0.8:
+                    tiers.add('med')
+                elif w >= W_THIN * 0.8:
+                    tiers.add('thin')
+                else:
+                    tiers.add('hair')
+            mx = max(self._widths)
+            if len(tiers) < 3:
+                errs.append(f'笔画只有 {len(tiers)} 档粗细（{sorted(tiers)}），至少要 3 档。'
+                            f'用 W_HAIR/W_THIN/W_MED/W_BOLD/W_FAT 拉开对比')
+            if mx < W_BOLD * 0.85:
+                errs.append(f'最粗的笔画只有 {mx:.1f}（< W_BOLD={W_BOLD}）。'
+                            '一版至少要有一笔 W_BOLD 或 W_FAT 级别的粗笔做视觉重心，'
+                            '否则整幅都是细线，看起来虚')
         if errs:
             raise ValueError('涂鸦自审未通过：\n  - ' + '\n  - '.join(errs))
         # 元素太少同样是问题：用户明确反馈过"画的内容太少了，需要更丰富些"。
@@ -755,10 +1139,15 @@ class Doodle:
                          '特写不低于 8）。一件实物可以长出一整组元素：一根晾衣杆 → 小衣服+夹子'
                          '+延续的线+抖动线。别把"每个元素有依据"做成"每件实物只配一个元素"。')
 
+        tier_str = ''
+        if self._widths:
+            tier_str = (f" | 粗细 {len(tiers)} 档 {sorted(tiers)}"
+                        f" 最细 {min(self._widths):.1f} 最粗 {mx:.1f}")
         self._audit = {'family': family, 'n': len(elements), 'off': len(offf),
                        'tally': dict(self._tally), 'note': note}
         print(f"自审通过 | 主导家族={family} | 元素 {len(elements)} 组（外家族 {len(offf)}）"
-              f" | 星 {self._tally['star']} 花 {self._tally['flower']} 文字 {self._tally['text']}")
+              f" | 星 {self._tally['star']} 花 {self._tally['flower']}"
+              f" 文字 {self._tally['text']}{tier_str}")
         for w in warns:
             print(f'  ⚠️  {w}')
         if note:
@@ -776,13 +1165,15 @@ class Doodle:
             print('⚠️  未调用 d.audit(...)——SKILL.md 第 4 步的防套路自审被跳过了。'
                   '\n    在 save() 前补上：d.audit(family=..., elements=[(名称, 是否主导家族, 依据照片什么), ...])')
         (wash, under, main), (dw, du, dm) = self._layers()
-        texts = []
+        texts, blobs = [], []
         for op in self.ops:
             if op['kind'] == 'text':
                 texts.append((op, 1.0))
+            elif op['kind'] == 'blob':
+                blobs.append((op, 1.0))
             else:
                 self._draw_op(dw, du, dm, op, 0.0, 1.0)
-        out = self._composite(wash, under, main, texts)
+        out = self._composite(wash, under, main, texts, blobs)
         out = out.convert('RGB').resize((self.W, self.H), Image.LANCZOS)
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         out.save(path, quality=93)
@@ -794,13 +1185,15 @@ class Doodle:
             return 0.12
         if k == 'poly':
             return 0.22
+        if k == 'blob':
+            return 0.55
         if k == 'text':
             return min(1.8, max(0.7, op['wpx']/280.0))
         Lf = op['L'] / S
         b = op.get('brush', 'marker')
         if k == 'dash':
             return min(0.15, max(0.04, Lf/PEN_SPEED))
-        if b == 'crayon':
+        if b in ('crayon', 'fur'):
             return min(1.3, max(0.2, Lf/(PEN_SPEED*0.65)))
         if b == 'water':
             return min(1.0, max(0.2, Lf/(PEN_SPEED*1.25)))
@@ -813,7 +1206,7 @@ class Doodle:
         if k in ('stroke', 'dash'):
             idx = min(bisect.bisect_left(op['d'], f*op['L']), len(op['path'])-1)
             return op['path'][idx]
-        if k == 'dot':
+        if k in ('dot', 'blob'):
             return op['c']
         if k == 'poly':
             return op['ctr']
@@ -897,7 +1290,7 @@ class Doodle:
         t_end = t
         total = t + hold
         (wash, under, main), (dw, du, dm) = self._layers()
-        texts = []
+        texts, blobs = [], []
         done_f = {}
         sprites = {}  # pen rgb -> sprite
         extent = int(min(self.W, self.H) * hand_scale)
@@ -922,6 +1315,7 @@ class Doodle:
         for i in range(nframes):
             tt = i / fps
             texts = [(op, f) for (op, f) in texts if f >= 1.0]
+            blobs = [(op, f) for (op, f) in blobs if f >= 1.0]
             for t0, t1, op in sched:
                 if tt < t0:
                     break
@@ -929,16 +1323,18 @@ class Doodle:
                 if f_prev >= 1.0:
                     continue
                 f = 1.0 if tt >= t1 else (tt - t0) / (t1 - t0)
-                if op['kind'] == 'text':
+                if op['kind'] in ('text', 'blob'):
+                    # re-rendered fresh each frame (never accumulated)
+                    bucket = texts if op['kind'] == 'text' else blobs
                     if f >= 1.0:
                         done_f[id(op)] = 1.0
-                        texts.append((op, 1.0))
+                        bucket.append((op, 1.0))
                     else:
-                        texts.append((op, f))
+                        bucket.append((op, f))
                 else:
                     self._draw_op(dw, du, dm, op, f_prev, f)
                     done_f[id(op)] = f
-            frame = self._composite(wash, under, main, texts)
+            frame = self._composite(wash, under, main, texts, blobs)
             frame = frame.convert('RGB').resize((self.W, self.H), Image.LANCZOS)
             if hand and sched:
                 st = self._hand_state(tt, sched, intro, t_end)
