@@ -52,17 +52,27 @@ def al(c, a):
     return (c[0], c[1], c[2], a)
 
 # ---- fonts: handwriting-style, with CJK fallback ----
-FONT_DIRS = ['/System/Library/Fonts/Supplemental/', '/System/Library/Fonts/', '/Library/Fonts/']
+_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'assets')
+FONT_DIRS = [_ASSET_DIR, os.path.expanduser('~/Library/Fonts/'),
+             '/System/Library/Fonts/Supplemental/', '/System/Library/Fonts/', '/Library/Fonts/']
 LATIN_FONTS = {  # casual -> fancy
     'marker': 'MarkerFelt.ttc', 'chalk': 'ChalkboardSE.ttc', 'hand': 'Bradley Hand Bold.ttf',
     'note': 'Noteworthy.ttc', 'script': 'SnellRoundhand.ttc', 'savoye': 'Savoye LET.ttc',
     'comic': 'Comic Sans MS Bold.ttf',
 }
-CJK_FONTS = ['Hiragino Sans GB.ttc', 'STHeiti Light.ttc', 'PingFang.ttc']
+# 中文手写体（随 skill 一起分发在 assets/）。macOS 系统只自带黑体和宋体，
+# 直接用会让中文像印刷标签、明显出戏，所以这里优先用手写体，黑体只作最后兜底。
+CJK_FONTS = {
+    'cjk':      ['ZCOOLKuaiLe-Regular.ttf', 'ZhiMangXing-Regular.ttf', 'Hiragino Sans GB.ttc'],
+    'cjk-kuai': ['ZCOOLKuaiLe-Regular.ttf', 'Hiragino Sans GB.ttc'],   # 圆润俏皮，像马克笔手写
+    'cjk-xing': ['ZhiMangXing-Regular.ttf', 'ZCOOLKuaiLe-Regular.ttf'],  # 钢笔行书，随手写感更强
+    'cjk-hei':  ['Hiragino Sans GB.ttc', 'STHeiti Light.ttc'],          # 印刷黑体（一般别用）
+}
 
 def font(name, size):
-    """name: a LATIN_FONTS key, a filename, or 'cjk' for Chinese/Japanese text."""
-    names = CJK_FONTS if name == 'cjk' else [LATIN_FONTS.get(name, name)]
+    """name: a LATIN_FONTS key, a filename, or a CJK_FONTS key
+    ('cjk' / 'cjk-kuai' / 'cjk-xing' / 'cjk-hei')."""
+    names = CJK_FONTS.get(name) or [LATIN_FONTS.get(name, name)]
     for nm in names:
         for d in FONT_DIRS:
             p = os.path.join(d, nm)
@@ -285,8 +295,8 @@ class Doodle:
         self._tally['text'] += 1
         if fname is None:
             fname = 'marker'
-        if has_cjk(s):
-            fname = 'cjk'
+        if has_cjk(s) and fname not in CJK_FONTS:
+            fname = 'cjk'        # 手写体优先；要指定风格就直接传 'cjk-kuai'/'cjk-xing'
         f = font(fname, size*S)
         probe = ImageDraw.Draw(Image.new('RGBA', (4, 4)))
         b = probe.textbbox((0, 0), s, font=f)
@@ -723,25 +733,34 @@ class Doodle:
             if not str(why).strip():
                 nowhy.append(name)
 
-        errs = []
+        errs, warns = [], []
         if nowhy:
             errs.append(f'这些元素没写"依据照片什么"，属于无来由的通用装饰，删掉或给出依据: {nowhy}')
-        if len(offf) > 2:
-            errs.append(f'外家族元素 {len(offf)} 个 > 上限 2 个: {offf}')
-        if self._tally['star'] > 4:
-            errs.append(f"sparkle/star4/star5 实测共 {self._tally['star']} 个 > 上限 4 个（撒星套路）")
+        if len(offf) > 4:
+            errs.append(f'外家族元素 {len(offf)} 个 > 上限 4 个: {offf}')
+        if self._tally['star'] > 8:
+            errs.append(f"sparkle/star4/star5 实测共 {self._tally['star']} 个 > 上限 8 个（撒星套路）")
         if self._tally['flower'] and '植物' not in str(family):
             errs.append(f"主导家族是「{family}」却画了 {self._tally['flower']} 个 flower/dotflower"
                         '——花只能在"人物与植物直接互动"时作主导（撒花套路）')
-        if portrait and self._tally['text'] > 3:
-            errs.append(f"人像文字元素实测 {self._tally['text']} 个 > 上限 3 个（宜家说明图）")
+        lim_text = 4 if portrait else 6
+        if self._tally['text'] > lim_text:
+            errs.append(f"文字元素实测 {self._tally['text']} 个 > 上限 {lim_text} 个（宜家说明图）")
         if errs:
             raise ValueError('涂鸦自审未通过：\n  - ' + '\n  - '.join(errs))
+        # 元素太少同样是问题：用户明确反馈过"画的内容太少了，需要更丰富些"。
+        # 这条只警告不拦，因为特写照片确实该克制——但你得看见它。
+        if len(elements) < 8:
+            warns.append(f'只有 {len(elements)} 组元素，偏少。目标 10-18 组（大场景可 20+，'
+                         '特写不低于 8）。一件实物可以长出一整组元素：一根晾衣杆 → 小衣服+夹子'
+                         '+延续的线+抖动线。别把"每个元素有依据"做成"每件实物只配一个元素"。')
 
         self._audit = {'family': family, 'n': len(elements), 'off': len(offf),
                        'tally': dict(self._tally), 'note': note}
-        print(f"自审通过 | 主导家族={family} | 元素 {len(elements)} 个（外家族 {len(offf)}）"
+        print(f"自审通过 | 主导家族={family} | 元素 {len(elements)} 组（外家族 {len(offf)}）"
               f" | 星 {self._tally['star']} 花 {self._tally['flower']} 文字 {self._tally['text']}")
+        for w in warns:
+            print(f'  ⚠️  {w}')
         if note:
             print(f'  取舍说明: {note}')
         return self._audit
