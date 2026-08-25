@@ -14,8 +14,8 @@
 - 光环下方垫一条 `brush='water', color=LEMON` 短笔画做光晕
 - 左右肩外侧画翅膀：一条上缘长弧线（w≈5.5）+ 3-4 段扇贝形下缘（under=False 避免叠影）+ 2 条羽轴 taper='tip'
 - 翅膀内垫淡紫/粉水彩衬色（w≈22-26）
-- 四散 `sparkle`（混用 WHITE/LEMON/PINK）+ 指尖/手边 `heart`
-- 草写 `text(..., fname='script')` + 粉色 `underline`（slope 匹配文字 rot）
+- `sparkle` ≤4 颗，且每颗要落在照片里真实的光点/高光上（**别"四散"撒——那是套路本身**）+ 指尖/手边 `heart`（要她真的在指什么才画）
+- 草写 `text(..., fname='script')` + 粉色 `underline`（slope 匹配文字 rot）；文案按 SKILL.md 硬禁止第 3-5 条选，**`angel`/`golden hour` 这类抽象词不合格**
 
 ### 2. kitty 猫咪
 - `cat_ears` 画在头发顶部轮廓上（先用水彩填内耳色打底再描线更好看）
@@ -31,7 +31,7 @@
 - 魔法轨迹：长曲线 `color=HOTPINK, color2=SKY` 渐变 + 同路径 glitter 叠一遍，沿途 `star5`
 - 天空 `arc` 两道同心月牙（YELLOW）+ 柠檬水彩光晕
 - 大面积留白处用 `dashed(color=SKY)` 连星座，节点放 sparkle
-- "make a wish" 草写 + 淡紫 underline
+- 草写文案 + 淡紫 underline（**"make a wish" 这类通用愿望词不合格**——换成这张照片里真在发生的事，比如她许愿的场合、当天日期）
 
 ### 4. rain 雨天治愈（适合伞/雨景照片）
 - 伞外三色雨丝（BLUE/SKY/LAVENDER 轮换，短斜线 taper='tip'）

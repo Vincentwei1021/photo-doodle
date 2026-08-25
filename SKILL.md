@@ -97,16 +97,22 @@ for name, (x0, y0, x1, y1) in {'左下石阶': (0.05, 0.72, 0.35, 0.95), '右上
 每版一个函数，import 引擎库：
 
 ```python
+"""涂鸦自审（第 4 步的注释块填在这里，见下文）"""
 import sys; sys.path.insert(0, '<skill目录>/scripts')
 from doodle_lib import *
 
 d = Doodle('/path/photo.jpg', seed=11)   # 每版换 seed，笔迹抖动不同
-d.halo(0.63, 0.27)                        # 图案库：见下
-d.sparkle(0.30, 0.35, 0.02, color=LEMON)
-d.text('angel', 0.78, 0.78, 84, fname='script', rot=-10)
-d.save('out/v1-angel.jpg')
-d.save_video('out/v1-angel.mp4')          # 默认带卡通手+马克笔叠加层
+# 主导家族=天气自然；每个元素都注明它呼应清单里的哪一项
+d.stroke([(0.72,0.14),(0.79,0.19),(0.76,0.24)], color=WHITE, w=3.4,
+         wob=0.6, taper='tip', n=60)      # 风线，顺她被吹乱的发梢方向
+d.sun(0.86, 0.52, r=0.028, color=CORAL)   # 落在照片里真实的夕阳位置
+d.text('风好大', 0.16, 0.10, 60, color=WHITE)   # 呼应"风吹乱头发"这个动作
+d.underline(0.13, 0.31, 0.13, color=CORAL, slope=0.004)
+d.save('out/dusk.jpg')
+d.save_video('out/dusk.mp4')              # 默认带二次元手+铅笔叠加层
 ```
+
+（这段示例本身就符合防套路要求：零撒花、风线顺真实发丝方向、太阳落在真实夕阳上、文案说出了正在发生的事。**别照抄成模板**——你的照片有别的名词。）
 
 过程视频默认显示一只握素描铅笔的**二次元少女手**（白皙纤细、粉指甲、日系上色）：笔尖锚定当前绘制点，笔画间抬笔飞移（微放大模拟离纸），写字时沿擦入边缘移动，开头从画面右下飞入、结尾飞出。不想要手就 `save_video(path, hand=False)`。
 
