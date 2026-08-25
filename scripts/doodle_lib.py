@@ -338,8 +338,14 @@ class Doodle:
              stroke_w=0, halo=0):
         """fname: LATIN_FONTS key or filename; auto-falls back to CJK font for Chinese.
         size is in ladder px (authored for a 900px short side, auto-scaled).
-        stroke_w: outline width in ladder px — use it to fake a fat marker nib
-        (a 40px font with stroke_w=3 reads much bolder than a thin 40px font).
+        stroke_w: outline width in ladder px. CLAMPED TO 1.0 — the handwriting
+        faces here (MarkerFelt et al.) are already bold, so anything above ~1
+        closes the letter counters and the word turns to mush. Measured: at
+        size=46 on a clean background, stroke_w=2.0 already fills the o/e/a
+        bowls and 2.5 renders "posed" as "poeed". Three separate agents reached
+        for this to fix legibility and all three destroyed their caption.
+        To make text read bigger, raise `size`. To separate it from a busy
+        background, use `halo`.
         halo: dark soft halo width in ladder px behind the glyphs. Use it on
         DAPPLED backgrounds (tree shade, grass) where the mean L looks safe but
         p90 is 190+: cranking stroke_w just fattens the letters into blobs, the
@@ -350,6 +356,10 @@ class Doodle:
         if has_cjk(s) and fname not in CJK_FONTS:
             fname = 'cjk'        # 手写体优先；要指定风格就直接传 'cjk-kuai'/'cjk-xing'
         f = font(fname, size*S*self.wscale)
+        if stroke_w > 1.0:
+            print(f'⚠️  text(stroke_w={stroke_w}) 会把字腔糊死，已收敛到 1.0。'
+                  '要更醒目就加大 size；要在杂乱背景上分离就用 halo=')
+            stroke_w = 1.0
         sw = int(round(stroke_w*S*self.wscale))
         probe = ImageDraw.Draw(Image.new('RGBA', (4, 4)))
         b = probe.textbbox((0, 0), s, font=f,
