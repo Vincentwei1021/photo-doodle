@@ -450,15 +450,31 @@ class Doodle:
             self.arc(x, y, rr_, rr_*1.35, -178, -2, color=col, w=w, wob=0.7)
 
     def sun(self, x, y, r=0.030, color=YELLOW, face=True, blush=PEACH,
-            rays=11, span=(0, 360), face_color=None, under=True):
+            rays=11, span=(0, 360), face_color=None, under=True, fill=False):
         """rays/span: ray count and angular span in degrees. Default is a full
         circle of 11 rays; pass span=(115, 247) for a left-facing half-sun, or
         span=(-60, 60) for rays pointing right.
         face_color: eyes/mouth color, defaults to `color` (WHITE is invisible on
         pale sky — that's why it's not hardcoded).
         under: pass False on pale/warm backgrounds; the dark underlay can go
-        muddy grey-green over a light wash."""
+        muddy grey-green over a light wash.
+        fill: the disc is a STROKED HOLLOW RING by default, so any texture
+        behind it (hair, grass, brick) shows through the middle and the whole
+        thing reads as a snail shell — a real two-round rework. Pass fill=True
+        over anything that isn't clean empty sky. Incompatible with face=True
+        (the face would be buried), so filling turns the face off.
+
+        Before drawing a sun at all, confirm the sun is IN the frame: a
+        monotonic warmth gradient along the horizon means the source is outside
+        it, and the honest element is a light band, not a disc."""
         fc = face_color or color
+        if fill:
+            face = False
+            pts = []
+            for i in range(40):
+                a = 2*math.pi*i/40
+                pts.append(self.P(x + self.ax(r*1.3*math.cos(a)), y + r*math.sin(a)))
+            self.poly(pts, color, under=under, wob=1.2)
         self.arc(x, y, r*1.3, r, 0, 360, color=color, w=W_BOLD*0.85, wob=0.9, under=under)
         a0, a1 = span
         n = max(1, rays)
