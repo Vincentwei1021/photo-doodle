@@ -202,6 +202,8 @@ class Doodle:
         self.img = base.resize((self.W*S, self.H*S), Image.LANCZOS).convert('RGBA')
         self.rng = random.Random(seed)
         self.ops = []
+        self._tally = {'star': 0, 'flower': 0, 'text': 0}
+        self._audit = None
 
     def P(self, x, y):
         return (x*self.W*S, y*self.H*S)
@@ -280,6 +282,7 @@ class Doodle:
 
     def text(self, s, x, y, size, fname=None, color=WHITE, rot=0, under=True):
         """fname: LATIN_FONTS key or filename; auto-falls back to CJK font for Chinese."""
+        self._tally['text'] += 1
         if fname is None:
             fname = 'marker'
         if has_cjk(s):
@@ -295,6 +298,7 @@ class Doodle:
 
     def sparkle(self, x, y, r, color=WHITE, rot=0.0, w=None):
         """4-point twinkle (two crossing tapered strokes)."""
+        self._tally['star'] += 1
         a = math.radians(rot)
         ww = w or max(2.8, r*self.H*0.24)
         for ang in (a, a+math.pi/2):
@@ -303,6 +307,7 @@ class Doodle:
             self.stroke([p1, (x, y), p2], color=color, w=ww, wob=0.4, n=40, taper='both')
 
     def star5(self, x, y, r, color=YELLOW, rot=-90, fill=True):
+        self._tally['star'] += 1
         pts = []
         for i in range(10):
             ang = math.radians(rot + i*36)
@@ -367,17 +372,29 @@ class Doodle:
             rr_ = r * (1 - 0.22*i)
             self.arc(x, y, rr_, rr_*1.35, -178, -2, color=col, w=w, wob=0.7)
 
-    def sun(self, x, y, r=0.030, color=YELLOW, face=True, blush=PEACH):
-        self.arc(x, y, r*1.3, r, 0, 360, color=color, w=4.6, wob=0.9)
-        for k in range(7):
-            a = math.radians(115 + k*22)
+    def sun(self, x, y, r=0.030, color=YELLOW, face=True, blush=PEACH,
+            rays=11, span=(0, 360), face_color=None, under=True):
+        """rays/span: ray count and angular span in degrees. Default is a full
+        circle of 11 rays; pass span=(115, 247) for a left-facing half-sun, or
+        span=(-60, 60) for rays pointing right.
+        face_color: eyes/mouth color, defaults to `color` (WHITE is invisible on
+        pale sky — that's why it's not hardcoded).
+        under: pass False on pale/warm backgrounds; the dark underlay can go
+        muddy grey-green over a light wash."""
+        fc = face_color or color
+        self.arc(x, y, r*1.3, r, 0, 360, color=color, w=4.6, wob=0.9, under=under)
+        a0, a1 = span
+        n = max(1, rays)
+        step = (a1 - a0) / n if (a1 - a0) % 360 == 0 else (a1 - a0) / max(1, n - 1)
+        for k in range(n):
+            a = math.radians(a0 + k*step)
             self.stroke([(x + r*1.6*math.cos(a)*self.H/self.W, y + r*1.3*math.sin(a)),
                          (x + r*2.3*math.cos(a)*self.H/self.W, y + r*1.9*math.sin(a))],
-                        color=color, w=3.4, wob=0.5, taper='tip', n=40)
+                        color=color, w=3.4, wob=0.5, taper='tip', n=40, under=under)
         if face:
             for ox in (-0.010, 0.012):
-                self.arc(x + ox, y + 0.002, 0.004, 0.004, 20, 160, w=2.4, wob=0.3, under=False)
-            self.arc(x + 0.001, y + 0.011, 0.007, 0.005, 20, 160, w=2.4, wob=0.3, under=False)
+                self.arc(x + ox, y + 0.002, 0.004, 0.004, 20, 160, color=fc, w=2.4, wob=0.3, under=False)
+            self.arc(x + 0.001, y + 0.011, 0.007, 0.005, 20, 160, color=fc, w=2.4, wob=0.3, under=False)
             if blush:
                 self.dot(x - 0.015, y + 0.008, 0.0035, color=blush, under=False)
                 self.dot(x + 0.016, y + 0.008, 0.0035, color=blush, under=False)
@@ -454,6 +471,7 @@ class Doodle:
 
     def star4(self, x, y, r, color=YELLOW, rot=0):
         """plump filled 4-point star (chunky sticker sparkle, unlike thin-line sparkle)"""
+        self._tally['star'] += 1
         pts = []
         for i in range(8):
             a = math.radians(rot - 90 + i*45)
@@ -464,6 +482,7 @@ class Doodle:
 
     def flower(self, x, y, r, petals=6, color=WHITE, center=YELLOW, w=3.2, cr=0.006, phase=0.3):
         """petal-outline flower + center dot; phase rotates the petal layout"""
+        self._tally['flower'] += 1
         for i in range(petals):
             a = 2*math.pi*i/petals + phase
             da = 0.55
@@ -477,6 +496,7 @@ class Doodle:
 
     def dotflower(self, x, y, r, color=YELLOW, center=CORAL):
         """tiny solid flower: 5 petal dots around a center dot"""
+        self._tally['flower'] += 1
         for i in range(5):
             a = 2*math.pi*i/5 - math.pi/2
             self.dot(x + self.ax(r*math.cos(a)), y + r*math.sin(a), r*0.55, color=color)
@@ -670,6 +690,62 @@ class Doodle:
             out.alpha_composite(img, pos)
         return out
 
+    # ================= anti-cliche audit =================
+
+    def audit(self, family, elements, portrait=True, note=''):
+        """Executable version of SKILL.md step 4. Call it right before save().
+
+        family:   the dominant element family you chose (string, non-empty)
+        elements: list of (name, family, why) for every element you drew, where
+                  `why` states the measurement / photo fact it depends on.
+                  An element whose `why` is empty is by definition generic filler
+                  -> hard error. `family` per element: True/'main' if it belongs
+                  to the dominant family, False/'other' otherwise.
+        portrait: True for people-centric photos (enforces the <=3 text cap)
+
+        Why executable instead of a comment block: comments are written once and
+        go stale silently across iterations. A real agent audited its v1 script,
+        then rendered v2..v5 without ever re-auditing -- the reported numbers
+        described a script that no longer existed. This call runs every render.
+        """
+        if not family or not str(family).strip():
+            raise ValueError('audit(): 必须写明主导家族')
+        if not elements:
+            raise ValueError('audit(): elements 不能为空——逐个列出你画的元素')
+
+        offf, nowhy = [], []
+        for i, e in enumerate(elements):
+            if len(e) != 3:
+                raise ValueError(f'audit(): elements[{i}] 须为 (name, family, why) 三元组')
+            name, fam, why = e
+            if fam in (False, 'other', 'off'):
+                offf.append(name)
+            if not str(why).strip():
+                nowhy.append(name)
+
+        errs = []
+        if nowhy:
+            errs.append(f'这些元素没写"依据照片什么"，属于无来由的通用装饰，删掉或给出依据: {nowhy}')
+        if len(offf) > 2:
+            errs.append(f'外家族元素 {len(offf)} 个 > 上限 2 个: {offf}')
+        if self._tally['star'] > 4:
+            errs.append(f"sparkle/star4/star5 实测共 {self._tally['star']} 个 > 上限 4 个（撒星套路）")
+        if self._tally['flower'] and '植物' not in str(family):
+            errs.append(f"主导家族是「{family}」却画了 {self._tally['flower']} 个 flower/dotflower"
+                        '——花只能在"人物与植物直接互动"时作主导（撒花套路）')
+        if portrait and self._tally['text'] > 3:
+            errs.append(f"人像文字元素实测 {self._tally['text']} 个 > 上限 3 个（宜家说明图）")
+        if errs:
+            raise ValueError('涂鸦自审未通过：\n  - ' + '\n  - '.join(errs))
+
+        self._audit = {'family': family, 'n': len(elements), 'off': len(offf),
+                       'tally': dict(self._tally), 'note': note}
+        print(f"自审通过 | 主导家族={family} | 元素 {len(elements)} 个（外家族 {len(offf)}）"
+              f" | 星 {self._tally['star']} 花 {self._tally['flower']} 文字 {self._tally['text']}")
+        if note:
+            print(f'  取舍说明: {note}')
+        return self._audit
+
     # ================= outputs =================
 
     def _layers(self):
@@ -677,6 +753,9 @@ class Doodle:
         return L, [ImageDraw.Draw(l) for l in L]
 
     def save(self, path):
+        if self._audit is None:
+            print('⚠️  未调用 d.audit(...)——SKILL.md 第 4 步的防套路自审被跳过了。'
+                  '\n    在 save() 前补上：d.audit(family=..., elements=[(名称, 是否主导家族, 依据照片什么), ...])')
         (wash, under, main), (dw, du, dm) = self._layers()
         texts = []
         for op in self.ops:
